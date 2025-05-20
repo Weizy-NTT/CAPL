@@ -1,0 +1,14 @@
+/*@!Encoding:1258*/
+includes {
+  #include "CANTP_library.can"
+}
+
+on key 't' {
+  byte data[50];
+  int i;
+  for (i = 0; i < 50; i++) {
+    data[i] = i;
+  }
+  CanTp_Transmit(tx_can_id, data, 50);
+  write("Triggered transmission of 50-byte message on CAN ID 0x123");
+}

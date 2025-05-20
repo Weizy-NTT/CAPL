@@ -1,12 +1,4 @@
 ﻿/*@!Encoding:65001*/
-/* CANTP.can - CAPL Implementation of CAN Transport Protocol (ISO 15765-2)
- * Supports unsegmented messages (Single Frame) per Figure 10
- * Extensible for segmented messages (FF, CF, FC)
- * Implements timers: As, Ar, Bs, Br, Cs, Cr
- * Compatible with CANoe for diagnostic testing
- */
-
-/* Global Variables and Constants */
 variables {
   /* Counter Types (instead of enum) */
   int CANTP_COUNTER_AS = 0;
@@ -415,12 +407,6 @@ CanTp_Timeout(int counter) {
   write("Timeout: Counter=%d", counter);
 }
 
-on key 's' {
-  CanTp_SetTimeout(CANTP_COUNTER_AS, 500); /* Set N_As to 500ms */
-  write("Set N_As timeout to 500ms");
-}
-
-/* Handle CAN Message (Rx Indication) */
 on message * {
   if (this.dir == RX && (this.id == rx_can_id || rx_can_id == 0)) {
     byte pci;
