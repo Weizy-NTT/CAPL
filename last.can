@@ -396,8 +396,10 @@ CanTp_TransmitConfirmation(dword can_id, int result) {
       sender_state = CANTP_SENDER_WAIT_FC;
       timer_values[CANTP_COUNTER_BS] = timer_timeouts[CANTP_COUNTER_BS];
       timer_active[CANTP_COUNTER_BS] = 1;
-    } else {
+    } else if (tx_length - ((sequence_number + 1) * 7) > 0) {
       CanTp_SendConsecutiveFrame();
+    } else {
+      CanTp_ResetToIdle();
     }
   }
 }
