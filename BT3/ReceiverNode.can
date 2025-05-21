@@ -6,9 +6,44 @@ includes {
 on key 'a' {
   byte data[50];
   int i;
+  rx_can_id = 0x123;
+  tx_can_id = 0x456;
   for (i = 0; i < 50; i++) {
     data[i] = i;
   }
-  CanTp_Transmit(0x456, data, 50);
-  write("Triggered transmission of 50-byte message on CAN ID 0x123");
+  CanTp_Transmit(tx_can_id, data, 50);
+  write("Triggered transmission of 50-byte message on CAN ID 0x456");
+}
+
+on message * {
+  if (this.dir == RX && (this.id == rx_can_id || rx_can_id == 0)) {
+    byte pci;
+    int frame_type;
+    byte payload[8];
+    pci = this.byte(0);
+    frame_type = (pci & 0xF0) >> 4;
+    for (i = 0; i < 8; i++) {
+      payload[i] = this.byte(i);
+    }
+    switch (frame_type) {
+      case 0: /* Single Frame */
+        CanTp_HandleSingleFrame(this.id, payload);
+        break;
+      case 1: /* First Frame */
+        CanTp_HandleFirstFrame(this.id, payload);
+        break;
+      case 2: /* Consecutive Frame */
+        CanTp_HandleConsecutiveFrame(this.id, payload);
+        break;
+      case 3: /* Flow Control */
+        CanTp_HandleFlowControl(this.id, payload);
+        break;
+    }
+  }
+  if (this.dir == TX && (this.id == tx_can_id)) {
+    /* Tx Confirmation */
+    timer_active[0] = 0; /* CANTP_COUNTER_AS */
+    timer_values[0] = 0;
+    CanTp_TransmitConfirmation(this.id, CANTP_OK);
+  }
 }

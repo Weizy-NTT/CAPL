@@ -52,8 +52,8 @@ variables {
   int st_min = 0;          /* From FC, ms */
 
   /* CAN IDs */
-  dword tx_can_id = 0x123;
-  dword rx_can_id = 0x456;
+  dword tx_can_id ;
+  dword rx_can_id ;
 
   /* Timer for 1ms tick */
   msTimer tick_timer;
@@ -245,24 +245,13 @@ CanTp_SendConsecutiveFrame() {
 /* Send Flow Control */
 CanTp_SendFlowControl(dword canId, int fcType, int bsValue, int stminValue) {
   message 0x0 tx_msg;
-  int finalFcType, finalBs, finalStmin;
   
   tx_msg.id = tx_can_id;
   tx_msg.dlc = 8;
   
-  /* Use panel values if parameters are -1 (indicating default) */
-//  finalFcType = (fcType == -1) ? @sysvar::CanTp::FcType : fcType;
-//  finalBs = (bsValue == -1) ? @sysvar::CanTp::Bs : bsValue;
-//  finalStmin = (stminValue == -1) ? @sysvar::CanTp::Stmin : stminValue;
-  
-  /* Validate parameters */
-  if (finalFcType < 0 || finalFcType > 2) finalFcType = 0; /* Default to CTS */
-  if (finalBs < 0 || finalBs > 255) finalBs = 0; /* No block size limit */
-  if (finalStmin < 0 || (finalStmin > 127 && finalStmin < 0xF1) || finalStmin > 0xF9) finalStmin = 10; /* Default 10ms */
-  
-  tx_msg.byte(0) = 0x30 | (finalFcType & 0x0F); /* PCI: FC */
-  tx_msg.byte(1) = finalBs;
-  tx_msg.byte(2) = finalStmin;
+  tx_msg.byte(0) = 0x30 | (fcType & 0x0F); /* PCI: FC */
+  tx_msg.byte(1) = bsValue;
+  tx_msg.byte(2) = stminValue;
   for (i = 3; i < 8; i++) {
     tx_msg.byte(i) = 0x55; /* Padding */
   }
@@ -272,7 +261,7 @@ CanTp_SendFlowControl(dword canId, int fcType, int bsValue, int stminValue) {
   output(tx_msg);
   
   /* Update receiver state based on FC type */
-  receiver_state = (finalFcType == 0) ? CANTP_RECEIVER_RECEIVE_CF : CANTP_RECEIVER_IDLE;
+  receiver_state = (fcType == 0) ? CANTP_RECEIVER_RECEIVE_CF : CANTP_RECEIVER_IDLE;
 }
 
 /* Handle Single Frame */
@@ -316,7 +305,7 @@ CanTp_HandleFirstFrame(dword canId, byte payload[]) {
   timer_active[3] = 0; /* CANTP_COUNTER_BR */
   timer_values[3] = 0;
   receiver_state = CANTP_RECEIVER_SEND_FC;
-  CanTp_SendFlowControl(canId, 0, 0, 10); /* ClearToSend, STmin=10ms */
+  CanTp_SendFlowControl(canId, 0, 2, 10); /* ClearToSend, STmin=10ms */
 }
 
 /* Handle Consecutive Frame */
@@ -345,7 +334,10 @@ CanTp_HandleConsecutiveFrame(dword canId, byte payload[]) {
 /* Handle Flow Control */
 CanTp_HandleFlowControl(dword canId, byte payload[]) {
   int fcType;
-  if (sender_state != CANTP_SENDER_WAIT_FC) return;
+  if (sender_state != CANTP_SENDER_WAIT_FC) {
+  write("Exiting CanTp_HandleFlowControl: Invalid sender_state=%d", sender_state);
+  return;
+}
   timer_active[2] = 0; /* CANTP_COUNTER_BS */
   timer_values[2] = 0;
   fcType = payload[0] & 0x0F;
@@ -407,35 +399,3 @@ CanTp_Timeout(int counter) {
   write("Timeout: Counter=%d", counter);
 }
 
-on message * {
-  if (this.dir == RX && (this.id == rx_can_id || rx_can_id == 0)) {
-    byte pci;
-    int frame_type;
-    byte payload[8];
-    pci = this.byte(0);
-    frame_type = (pci & 0xF0) >> 4;
-    for (i = 0; i < 8; i++) {
-      payload[i] = this.byte(i);
-    }
-    switch (frame_type) {
-      case 0: /* Single Frame */
-        CanTp_HandleSingleFrame(this.id, payload);
-        break;
-      case 1: /* First Frame */
-        CanTp_HandleFirstFrame(this.id, payload);
-        break;
-      case 2: /* Consecutive Frame */
-        CanTp_HandleConsecutiveFrame(this.id, payload);
-        break;
-      case 3: /* Flow Control */
-        CanTp_HandleFlowControl(this.id, payload);
-        break;
-    }
-  }
-  if (this.dir == TX && this.id == tx_can_id) {
-    /* Tx Confirmation */
-    timer_active[0] = 0; /* CANTP_COUNTER_AS */
-    timer_values[0] = 0;
-    CanTp_TransmitConfirmation(this.id, CANTP_OK);
-  }
-}
