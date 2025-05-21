@@ -62,6 +62,7 @@ variables {
   int last_error = 0;
   int i;
   int cf_count = 0; /* Number of CFs sent in current block */
+  int cf_received = 0;
 }
 
 /* Initialize on Start */
@@ -310,21 +311,30 @@ CanTp_HandleFirstFrame(dword canId, byte payload[]) {
 
 /* Handle Consecutive Frame */
 CanTp_HandleConsecutiveFrame(dword canId, byte payload[]) {
-  int sn;
-  int j;
+  int sn, j;
+  
   if (receiver_state != CANTP_RECEIVER_RECEIVE_CF) return;
   timer_active[5] = 0; /* CANTP_COUNTER_CR */
   timer_values[5] = 0;
   sn = payload[0] & 0x0F;
   if (sn != (sequence_number + 1) % 16) return; /* Wrong SN */
   sequence_number = sn;
+  
   for (j = 0; j < 7 && rx_length < rx_expected_length; j++) {
     rx_data[rx_length] = payload[j + 1];
     rx_length++;
   }
+  
+  cf_received++; /* Tăng số CF đã nhận */
+  
   if (rx_length >= rx_expected_length) {
     receiver_state = CANTP_RECEIVER_IDLE;
     CanTp_ReceiveIndication(canId, rx_data, rx_length);
+    cf_received = 0; /* Reset đếm CF */
+  } else if (/*block_size > 0 && */cf_received >= block_size) {
+    receiver_state = CANTP_RECEIVER_SEND_FC;
+    CanTp_SendFlowControl(canId, 0, block_size, st_min); /* Gửi FC mới */
+    cf_received = 0; /* Reset đếm CF */
   } else {
     timer_values[5] = timer_timeouts[5]; /* CANTP_COUNTER_CR */
     timer_active[5] = 1;
