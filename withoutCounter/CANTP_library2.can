@@ -1,0 +1,262 @@
+﻿/*@!Encoding:65001*/
+variables {
+  /* Result Codes */
+  int CANTP_OK = 0;
+  int CANTP_E_INVALID_LENGTH = 7;
+  int CANTP_E_BUSY = 8;
+
+  /* Sender States */
+  int CANTP_SENDER_IDLE = 0;
+  int CANTP_SENDER_SEND_SF = 1;
+  int CANTP_SENDER_SEND_FF = 2;
+  int CANTP_SENDER_WAIT_FC = 3;
+  int CANTP_SENDER_SEND_CF = 4;
+
+  /* Receiver States */
+  int CANTP_RECEIVER_IDLE = 0;
+  int CANTP_RECEIVER_PREPARE_BUFFER = 1;
+  int CANTP_RECEIVER_SEND_FC = 2;
+  int CANTP_RECEIVER_RECEIVE_CF = 3;
+
+  /* State Variables */
+  int sender_state = 0;
+  int receiver_state = 0;
+
+  /* Buffers */
+  byte tx_data[4095];      /* Transmit buffer */
+  byte rx_data[4095];      /* Receive buffer */
+  int tx_length = 0;
+  int rx_length = 0;
+  int rx_expected_length = 0;
+  int sequence_number = 0; /* For CFs */
+  int block_size = 0;      /* From FC */
+  int st_min = 0;          /* From FC, ms */
+
+  /* CAN IDs */
+  dword tx_can_id;
+  dword rx_can_id;
+
+  /* Last error for debugging */
+  int last_error = 0;
+  int i;
+  int cf_count = 0;        /* Number of CFs sent in current block */
+  int cf_received = 0;     /* Number of CFs received in current block */
+}
+
+/* Initialize on Start */
+on start {
+  sender_state = CANTP_SENDER_IDLE;
+  receiver_state = CANTP_RECEIVER_IDLE;
+}
+
+/* Reset to IDLE */
+CanTp_ResetToIdle() {
+  sender_state = CANTP_SENDER_IDLE;
+  receiver_state = CANTP_RECEIVER_IDLE;
+  tx_length = 0;
+  rx_length = 0;
+  rx_expected_length = 0;
+  sequence_number = 0;
+  block_size = 0;
+  st_min = 0;
+  cf_count = 0;
+  cf_received = 0;
+}
+
+/* API: Transmit Request */
+int CanTp_Transmit(dword can_id, byte data[], int length) {
+  if (sender_state != CANTP_SENDER_IDLE) return CANTP_E_BUSY;
+  if (length < 1 || length > 4095) return CANTP_E_INVALID_LENGTH;
+
+  tx_can_id = can_id;
+  tx_length = length;
+  for (i = 0; i < length; i++) {
+    tx_data[i] = data[i];
+  }
+
+  if (length <= 7) {
+    /* Unsegmented Message (SF) */
+    sender_state = CANTP_SENDER_SEND_SF;
+    CanTp_SendSingleFrame();
+  } else {
+    /* Segmented Message (FF) */
+    sender_state = CANTP_SENDER_SEND_FF;
+    CanTp_SendFirstFrame();
+  }
+  return CANTP_OK;
+}
+
+/* Send Single Frame */
+CanTp_SendSingleFrame() {
+  message 0x0 tx_msg; /* Dynamic CAN ID */
+  tx_msg.id = tx_can_id;
+  tx_msg.dlc = 8;
+  tx_msg.byte(0) = 0x00 | (tx_length & 0x0F); /* PCI: SF, length */
+  for (i = 0; i < tx_length; i++) {
+    tx_msg.byte(i + 1) = tx_data[i];
+  }
+  for (i = tx_length + 1; i < 8; i++) {
+    tx_msg.byte(i) = 0xCC; /* Padding */
+  }
+  output(tx_msg);
+}
+
+/* Send First Frame (for segmented messages) */
+CanTp_SendFirstFrame() {
+  message 0x0 tx_msg;
+  tx_msg.id = tx_can_id;
+  tx_msg.dlc = 8;
+  tx_msg.byte(0) = 0x10 | ((tx_length >> 8) & 0x0F); /* PCI: FF, length high */
+  tx_msg.byte(1) = tx_length & 0xFF; /* Length low */
+  for (i = 0; i < 6; i++) {
+    tx_msg.byte(i + 2) = tx_data[i];
+  }
+  output(tx_msg);
+}
+
+/* Send Consecutive Frame (for segmented messages) */
+CanTp_SendConsecutiveFrame() {
+  message 0x0 tx_msg;
+  int offset;
+  tx_msg.id = tx_can_id;
+  tx_msg.dlc = 8;
+  sequence_number = (sequence_number + 1) % 16;
+  tx_msg.byte(0) = 0x20 | sequence_number; /* PCI: CF */
+  offset = sequence_number * 7; /* Adjust based on data sent */
+  for (i = 0; i < 7 && offset + i < tx_length; i++) {
+    tx_msg.byte(i + 1) = tx_data[offset + i];
+  }
+  for (; i < 7; i++) {
+    tx_msg.byte(i + 1) = 0xCC; /* Padding */
+  }
+  output(tx_msg);
+}
+
+/* Send Flow Control */
+CanTp_SendFlowControl(dword canId, int fcType, int bsValue, int stminValue) {
+  message 0x0 tx_msg;
+  tx_msg.id = tx_can_id;
+  tx_msg.dlc = 8;
+  tx_msg.byte(0) = 0x30 | (fcType & 0x0F); /* PCI: FC */
+  tx_msg.byte(1) = bsValue;
+  tx_msg.byte(2) = stminValue;
+  for (i = 3; i < 8; i++) {
+    tx_msg.byte(i) = 0xCC; /* Padding */
+  }
+  output(tx_msg);
+  /* Update receiver state based on FC type */
+  receiver_state = (fcType == 0) ? CANTP_RECEIVER_RECEIVE_CF : CANTP_RECEIVER_IDLE;
+}
+
+/* Handle Single Frame */
+CanTp_HandleSingleFrame(dword canId, byte payload[]) {
+  int length;
+  length = payload[0] & 0x0F;
+  if (length > 7) {
+    last_error = CANTP_E_INVALID_LENGTH;
+    CanTp_ResetToIdle();
+    return;
+  }
+  for (i = 0; i < length; i++) {
+    rx_data[i] = payload[i + 1];
+  }
+  rx_length = length;
+  CanTp_ReceiveIndication(canId, rx_data, rx_length);
+}
+
+/* Handle First Frame */
+CanTp_HandleFirstFrame(dword canId, byte payload[]) {
+  if (receiver_state != CANTP_RECEIVER_IDLE) return;
+  rx_expected_length = ((payload[0] & 0x0F) << 8) | payload[1];
+  if (rx_expected_length > 4095) {
+    CanTp_SendFlowControl(canId, 2, 0, 0); /* Overflow */
+    return;
+  }
+  receiver_state = CANTP_RECEIVER_PREPARE_BUFFER;
+  for (i = 0; i < 6; i++) {
+    rx_data[i] = payload[i + 2];
+  }
+  rx_length = 6;
+  sequence_number = 0;
+  receiver_state = CANTP_RECEIVER_SEND_FC;
+  CanTp_SendFlowControl(canId, 0, 2, 10); /* ClearToSend, STmin=10ms */
+}
+
+/* Handle Consecutive Frame */
+CanTp_HandleConsecutiveFrame(dword canId, byte payload[]) {
+  int sn, j;
+  if (receiver_state != CANTP_RECEIVER_RECEIVE_CF) return;
+  sn = payload[0] & 0x0F;
+  if (sn != (sequence_number + 1) % 16) return; /* Wrong SN */
+  sequence_number = sn;
+  for (j = 0; j < 7 && rx_length < rx_expected_length; j++) {
+    rx_data[rx_length] = payload[j + 1];
+    rx_length++;
+  }
+  cf_received++;
+  if (rx_length >= rx_expected_length) {
+    receiver_state = CANTP_RECEIVER_IDLE;
+    CanTp_ReceiveIndication(canId, rx_data, rx_length);
+    cf_received = 0;
+  } else if (cf_received >= block_size) {
+    receiver_state = CANTP_RECEIVER_SEND_FC;
+    CanTp_SendFlowControl(canId, 0, block_size, st_min); /* Send new FC */
+    cf_received = 0;
+  }
+}
+
+/* Handle Flow Control */
+CanTp_HandleFlowControl(dword canId, byte payload[]) {
+  int fcType;
+  if (sender_state != CANTP_SENDER_WAIT_FC) {
+    write("Exiting CanTp_HandleFlowControl: Invalid sender_state=%d", sender_state);
+    return;
+  }
+  fcType = payload[0] & 0x0F;
+  block_size = payload[1];
+  st_min = payload[2];
+  CanTp_FlowControlIndication(canId, fcType, block_size, st_min);
+  switch (fcType) {
+    case 0: /* ClearToSend */
+      sender_state = CANTP_SENDER_SEND_CF;
+      cf_count = 0; /* Reset CF counter */
+      CanTp_SendConsecutiveFrame(); /* Start sending CFs */
+      break;
+    case 1: /* Wait */
+      /* No action, wait for next FC */
+      break;
+    case 2: /* Overflow */
+      CanTp_ResetToIdle();
+      break;
+  }
+  write("FC Decision: FS=%d, BS=%d, STmin=%d, Next State=%d", fcType, block_size, st_min, sender_state);
+}
+
+/* Callback Stubs */
+CanTp_TransmitConfirmation(dword can_id, int result) {
+  write("Tx Confirmation: CAN ID=0x%x, Result=%d", can_id, result);
+  if (sender_state == CANTP_SENDER_SEND_SF) {
+    CanTp_ResetToIdle();
+  } else if (sender_state == CANTP_SENDER_SEND_FF) {
+    sender_state = CANTP_SENDER_WAIT_FC;
+  } else if (sender_state == CANTP_SENDER_SEND_CF) {
+    cf_count++;
+    if (sequence_number * 7 >= tx_length) {
+      CanTp_ResetToIdle();
+    } else if (block_size > 0 && cf_count >= block_size) {
+      sender_state = CANTP_SENDER_WAIT_FC;
+    } else if (tx_length - ((sequence_number + 1) * 7) > 0) {
+      CanTp_SendConsecutiveFrame();
+    } else {
+      CanTp_ResetToIdle();
+    }
+  }
+}
+
+CanTp_ReceiveIndication(dword can_id, byte data[], int length) {
+  write("Rx Indication: CAN ID=0x%x, Length=%d", can_id, length);
+}
+
+CanTp_FlowControlIndication(dword can_id, int fc_type, int bs, int stmin) {
+  write("FC Indication: CAN ID=0x%x, Type=%d, BS=%d, STmin=%d", can_id, fc_type, bs, stmin);
+}
