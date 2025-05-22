@@ -10,7 +10,7 @@ on start {
 }
 
 
-on key 't' {
+on key 'a' {
   byte data[50];
   int i;
   for (i = 0; i < 50; i++) {

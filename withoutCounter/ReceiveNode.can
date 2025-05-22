@@ -15,12 +15,12 @@ on key 't' {
   int i;
   for (i = 0; i < 50; i++) {
     data[i] = i;
-  }
+  } 
   CanTp_Transmit(tx_can_id, data, 50);
   write("Triggered transmission of 50-byte message on CAN ID 0x456");
 }
 
-on message * {
+on message 0x123 {
   if (this.dir == RX && (this.id == rx_can_id || rx_can_id == 0)) {
     byte pci;
     int frame_type;

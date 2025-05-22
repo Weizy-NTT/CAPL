@@ -231,21 +231,23 @@ CanTp_HandleFirstFrame(dword canId, byte payload[]) {
     rx_data[i] = payload[i + 2];
   }
   rx_length = 6;
+  cf_received = 0;
   sequence_number = 0;
+  block_size = default_block_size;
   receiver_state = CANTP_RECEIVER_SEND_FC;
   CanTp_SendFlowControl(canId, 0, default_block_size, default_st_min);
 }
 
-/* Handle Consecutive Frame */
 CanTp_HandleConsecutiveFrame(dword canId, byte payload[]) {
   int sn, j;
   if (receiver_state != CANTP_RECEIVER_RECEIVE_CF) {
-    write("Ignoring CF, invalid state=%d", receiver_state);
+    write("Ignoring CF: receiver_state=%d", receiver_state);
     return;
   }
   sn = payload[0] & 0x0F;
   if (sn != (sequence_number + 1) % 16) {
     write("Error: Invalid sequence number=%d, expected=%d", sn, (sequence_number + 1) % 16);
+    CanTp_SendFlowControl(canId, 2, 0, 0); /* Gửi FC overflow */
     CanTp_ResetToIdle();
     return;
   }
@@ -255,14 +257,19 @@ CanTp_HandleConsecutiveFrame(dword canId, byte payload[]) {
     rx_length++;
   }
   cf_received++;
+  write("CF Received: SN=%d, cf_received=%d, block_size=%d, rx_length=%d", 
+        sn, cf_received, block_size, rx_length);
   if (rx_length >= rx_expected_length) {
     receiver_state = CANTP_RECEIVER_IDLE;
     write("Rx Indication: CAN ID=0x%x, Length=%d", canId, rx_length);
     CanTp_ResetToIdle();
-  } else if (cf_received >= block_size) {
+  } else if (block_size > 0 && cf_received >= block_size) {
     receiver_state = CANTP_RECEIVER_SEND_FC;
-    CanTp_SendFlowControl(canId, 0, block_size, st_min);
+    CanTp_SendFlowControl(canId, 0, default_block_size, default_st_min); /* Dùng default */
+    write("Sent FC: BS=%d, STmin=%d, cf_received=%d", default_block_size, default_st_min, cf_received);
     cf_received = 0;
+  } else {
+    write("Waiting for more CFs: cf_received=%d, block_size=%d", cf_received, block_size);
   }
 }
 
