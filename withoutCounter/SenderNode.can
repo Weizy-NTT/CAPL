@@ -3,11 +3,16 @@ includes {
   #include "CANTP_library2.can"
 }
 
+on start {
+  CanTp_ResetToIdle();
+  rx_can_id = 0x456;
+  tx_can_id = 0x123;
+}
+
+
 on key 't' {
   byte data[50];
   int i;
-  rx_can_id = 0x456;
-  tx_can_id = 0x123;
   for (i = 0; i < 50; i++) {
     data[i] = i;
   }
@@ -39,8 +44,5 @@ on message * {
         CanTp_HandleFlowControl(this.id, payload);
         break;
     }
-  }
-  if (this.dir == TX && (this.id == tx_can_id)) {
-    CanTp_TransmitConfirmation(this.id, CANTP_OK);
   }
 }

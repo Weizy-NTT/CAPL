@@ -105,6 +105,29 @@ CanTp_Tick() {
   }
 }
 
+/* Disable all timers except the specified one */
+int CanTp_DisableOtherTimers(int counter) {
+  int i;
+  
+  /* Check if counter is valid */
+  if (counter < 0 || counter > 5) {
+    last_error = CANTP_E_INVALID_LENGTH;
+    write("Error: Invalid counter value %d", counter);
+    return CANTP_E_INVALID_LENGTH;
+  }
+  
+  /* Disable all timers except the specified one */
+  for (i = 0; i < 6; i++) {
+    if (i != counter) {
+      timer_active[i] = 0;
+      timer_values[i] = 0;
+    }
+  }
+  
+  write("Disabled all timers except counter %d", counter);
+  return CANTP_OK;
+}
+
 /* Handle Timeout */
 CanTp_HandleTimeout(int counter) {
   switch (counter) {
@@ -205,6 +228,7 @@ CanTp_SendSingleFrame() {
   }
   timer_values[CANTP_COUNTER_AS] = timer_timeouts[CANTP_COUNTER_AS];
   timer_active[CANTP_COUNTER_AS] = 1;
+  CanTp_DisableOtherTimers(CANTP_COUNTER_AS);
   output(tx_msg);
 }
 
@@ -220,6 +244,7 @@ CanTp_SendFirstFrame() {
   }
   timer_values[CANTP_COUNTER_AS] = timer_timeouts[CANTP_COUNTER_AS];
   timer_active[CANTP_COUNTER_AS] = 1;
+  CanTp_DisableOtherTimers(CANTP_COUNTER_AS);
   output(tx_msg);
 }
 
@@ -240,6 +265,7 @@ CanTp_SendConsecutiveFrame() {
   }
   timer_values[CANTP_COUNTER_AS] = timer_timeouts[CANTP_COUNTER_AS];
   timer_active[CANTP_COUNTER_AS] = 1;
+  CanTp_DisableOtherTimers(CANTP_COUNTER_AS);
   output(tx_msg);
 }
 
@@ -259,6 +285,7 @@ CanTp_SendFlowControl(dword canId, int fcType, int bsValue, int stminValue) {
   
   timer_values[1] = timer_timeouts[1]; /* CANTP_COUNTER_AR */
   timer_active[1] = 1;
+  CanTp_DisableOtherTimers(1);
   output(tx_msg);
   
   /* Update receiver state based on FC type */
@@ -270,6 +297,7 @@ CanTp_HandleSingleFrame(dword canId, byte payload[]) {
   int length;
   timer_values[CANTP_COUNTER_AR] = timer_timeouts[CANTP_COUNTER_AR];
   timer_active[CANTP_COUNTER_AR] = 1;
+  CanTp_DisableOtherTimers(CANTP_COUNTER_AR);
   length = payload[0] & 0x0F;
   if (length > 7) {
     last_error = CANTP_E_INVALID_LENGTH;
@@ -331,7 +359,7 @@ CanTp_HandleConsecutiveFrame(dword canId, byte payload[]) {
     receiver_state = CANTP_RECEIVER_IDLE;
     CanTp_ReceiveIndication(canId, rx_data, rx_length);
     cf_received = 0; /* Reset đếm CF */
-  } else if (/*block_size > 0 && */cf_received >= block_size) {
+  } else if (block_size > 0 && cf_received >= block_size) {
     receiver_state = CANTP_RECEIVER_SEND_FC;
     CanTp_SendFlowControl(canId, 0, block_size, st_min); /* Gửi FC mới */
     cf_received = 0; /* Reset đếm CF */
