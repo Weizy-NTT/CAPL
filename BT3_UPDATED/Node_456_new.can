@@ -1,0 +1,68 @@
+﻿/*@!Encoding:65001*/
+includes {
+  #include "CANTP_library.can"
+}
+
+on sysvar  Node_2::STmin_Node456
+{
+  default_st_min = @ Node_2::STmin_Node456;
+}
+
+on sysvar  Node_2::BS_Node456
+{
+  default_block_size = @ Node_2::BS_Node456;
+}
+
+on sysvar  Node_2::Data_Node456
+{
+  default_Data = @ Node_2::Data_Node456;
+}
+
+on sysvar  Node_2::FS_Node456
+{
+  default_Fs = @ Node_2::FS_Node456;
+}
+
+on start {
+  CanTp_ResetToIdle();
+  rx_can_id = 0x123;
+  tx_can_id = 0x456;
+}
+
+
+on key 't' {
+  byte data[1000];
+  int i;
+  for (i = 0; i < default_Data; i++) {
+    data[i] = i;
+  }
+  CanTp_Transmit(tx_can_id, data, default_Data);
+  write("Triggered transmission of 50-byte message on CAN ID 0x456");
+}
+
+on message * {
+  if (this.dir == RX && (this.id == rx_can_id || rx_can_id == 0)) {
+    byte pci;
+    int frame_type;
+    byte payload[8];
+    pci = this.byte(0);
+    frame_type = (pci & 0xF0) >> 4;
+    for (i = 0; i < 8; i++) {
+      payload[i] = this.byte(i);
+    }
+    switch (frame_type) {
+      case 0: /* Single Frame */
+        CanTp_HandleSingleFrame(this.id, payload);
+        break;
+      case 1: /* First Frame */
+        CanTp_HandleFirstFrame(this.id, payload);
+        break;
+      case 2: /* Consecutive Frame */
+        CanTp_HandleConsecutiveFrame(this.id, payload);
+        break;
+      case 3: /* Flow Control */
+        CanTp_HandleFlowControl(this.id, payload);
+        break;
+    }
+  }
+}

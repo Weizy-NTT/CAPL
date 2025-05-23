@@ -1,0 +1,41 @@
+﻿/*@!Encoding:65001*/
+variables
+{
+  message 0x2E3 msgEcho;
+  message 0x2E4 msgSum;
+}
+
+on message 0x3B2
+{
+  int i;
+  word sum; // 16-bit to hold up to 2040
+  word engineSpeed;
+  sum = 0;
+  
+  engineSpeed = ((this.byte(0) & 0x0F) << 12)
+              | (this.byte(1) << 4)
+              | ((this.byte(2) & 0xF0) >> 4);
+
+  for (i = 0; i < 8; i++) 
+  {
+    msgEcho.byte(i) = this.byte(i);
+  }
+  
+  msgEcho.dlc = 8;
+  output(msgEcho);
+  
+  write("Node2 sent 0x2E3: Echoed 0x3B2 with EngineSpeed = %d", engineSpeed);
+
+  for (i = 0; i < 8; i++)
+  {
+    sum += this.byte(i);
+  }
+  
+  msgSum.byte(0) = (sum >> 8) & 0xFF; // High byte (0 if sum < 255)
+  msgSum.byte(1) = sum & 0xFF;       // Low byte
+  
+  msgSum.dlc = 8;
+  output(msgSum);
+  write("Node2 sent 0x2E4: Byte Sum = %d (Hex: %04X, Bytes: %02X %02X)", 
+        sum, sum, msgSum.byte(0), msgSum.byte(1));
+}

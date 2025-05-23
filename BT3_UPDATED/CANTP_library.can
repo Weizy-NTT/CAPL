@@ -1,0 +1,316 @@
+﻿/*@!Encoding:65001*/
+variables {
+  /* Result Codes */
+  int CANTP_OK = 0;
+  int CANTP_E_INVALID_LENGTH = 7;
+  int CANTP_E_BUSY = 8;
+
+  /* Sender States */
+  int CANTP_SENDER_IDLE = 0;
+  int CANTP_SENDER_SEND_SF = 1;
+  int CANTP_SENDER_SEND_FF = 2;
+  int CANTP_SENDER_WAIT_FC = 3;
+  int CANTP_SENDER_SEND_CF = 4;
+
+  /* Receiver States */
+  int CANTP_RECEIVER_IDLE = 0;
+  int CANTP_RECEIVER_PREPARE_BUFFER = 1;
+  int CANTP_RECEIVER_SEND_FC = 2;
+  int CANTP_RECEIVER_RECEIVE_CF = 3;
+
+  /* State Variables */
+  int sender_state = 0;
+  int receiver_state = 0;
+
+  /* Buffers */
+  byte tx_data[4095];      /* Transmit buffer */
+  byte rx_data[4095];      /* Receive buffer */
+  int tx_length = 0;
+  int rx_length = 0;
+  int rx_expected_length = 0;
+  int sequence_number = 0; /* For CFs */
+  int block_size = 0;      /* From FC */
+  int st_min = 0;          /* From FC, ms */
+  int cf_count = 0;        /* Number of CFs sent in current block */
+  int cf_received = 0;     /* Number of CFs received in current block */
+
+  /* CAN IDs */
+  dword tx_can_id;
+  dword rx_can_id;
+
+  /* Last error for debugging */
+  int last_error = 0;
+  int i;
+
+  /* Timer for CF transmission */
+  msTimer cf_timer;        /* Millisecond timer for CF sending based on STmin */
+  msTimer cs_timer;        /* New: Communication Supervision timer */
+  msTimer br_timer;        /* New: Block Reception timer */
+  
+  int default_block_size = 0; /* Configurable BS */
+  int default_st_min = 50;   /* Configurable STmin, ms for testing */
+  int default_Fs = 0;
+  int default_Data = 50;
+}
+
+/* Reset to IDLE */
+CanTp_ResetToIdle() {
+  sender_state = CANTP_SENDER_IDLE;
+  receiver_state = CANTP_RECEIVER_IDLE;
+  tx_length = 0;
+  rx_length = 0;
+  rx_expected_length = 0;
+  sequence_number = 0;
+  block_size = 0;
+  st_min = 0;
+  cf_count = 0;
+  cf_received = 0;
+  cancelTimer(cf_timer);
+}
+
+/* API: Transmit Request */
+int CanTp_Transmit(dword can_id, byte data[], int length) {
+  if (sender_state != CANTP_SENDER_IDLE) {
+    write("Error: Transmitter busy, state=%d", sender_state);
+    return CANTP_E_BUSY;
+  }
+  if (length < 1 || length > 4095) {
+    write("Error: Invalid length=%d", length);
+    return CANTP_E_INVALID_LENGTH;
+  }
+
+  tx_can_id = can_id;
+  tx_length = length;
+  for (i = 0; i < length; i++) {
+    tx_data[i] = data[i];
+  }
+
+  if (length <= 7) {
+    sender_state = CANTP_SENDER_SEND_SF;
+    CanTp_SendSingleFrame();
+  } else {
+    sender_state = CANTP_SENDER_SEND_FF;
+    CanTp_SendFirstFrame();
+  }
+  return CANTP_OK;
+}
+
+/* Send Single Frame */
+CanTp_SendSingleFrame() {
+  message 0x0 tx_msg;
+  tx_msg.id = tx_can_id;
+  tx_msg.dlc = 8;
+  tx_msg.byte(0) = 0x00 | (tx_length & 0x0F); /* PCI: SF, length */
+  for (i = 0; i < tx_length; i++) {
+    tx_msg.byte(i + 1) = tx_data[i];
+  }
+  for (i = tx_length + 1; i < 8; i++) {
+    tx_msg.byte(i) = 0xCC; /* Padding */
+  }
+  output(tx_msg);
+  CanTp_ResetToIdle();
+}
+
+/* Send First Frame */
+CanTp_SendFirstFrame() {
+  message 0x0 tx_msg;
+  tx_msg.id = tx_can_id;
+  tx_msg.dlc = 8;
+  tx_msg.byte(0) = 0x10 | ((tx_length >> 8) & 0x0F); /* PCI: FF, length high */
+  tx_msg.byte(1) = tx_length & 0xFF; /* Length low */
+  for (i = 0; i < 6; i++) {
+    tx_msg.byte(i + 2) = tx_data[i];
+  }
+  output(tx_msg);
+  sequence_number = 0; /* Reset for CFs */
+  sender_state = CANTP_SENDER_WAIT_FC;
+}
+
+CanTp_SendConsecutiveFrame() {
+  message 0x0 tx_msg;
+  int offset;
+  tx_msg.id = tx_can_id;
+  tx_msg.dlc = 8;
+  sequence_number = (sequence_number + 1) % 16;
+  tx_msg.byte(0) = 0x20 | sequence_number; /* PCI: CF */
+  offset = 6 + (sequence_number - 1) * 7; /* Start after FF's 6 bytes */
+  for (i = 0; i < 7 && offset + i < tx_length; i++) {
+    tx_msg.byte(i + 1) = tx_data[offset + i];
+  }
+  for (; i < 7; i++) {
+    tx_msg.byte(i + 1) = 0xCC; /* Padding */
+  }
+  output(tx_msg);
+  cf_count++;
+  if (6 + sequence_number * 7 >= tx_length) {
+    CanTp_ResetToIdle(); /* All data sent */
+  } else if (block_size > 0 && cf_count >= block_size) {
+    sender_state = CANTP_SENDER_WAIT_FC;
+    cancelTimer(cf_timer);
+  } else if (block_size == 0) {
+    /* For block_size = 0, send all CFs with STmin delay */
+    int adjusted_st_min;
+    adjusted_st_min = st_min;
+    if (st_min >= 0xF1 && st_min <= 0xF9) {
+      adjusted_st_min = (st_min - 0xF0) / 10; /* Corrected microsecond conversion */
+    }
+    if (adjusted_st_min == 0) {
+      CanTp_SendConsecutiveFrame(); /* Immediate send */
+    } else {
+      setTimer(cf_timer, adjusted_st_min);
+    }
+  } else {
+    /* Continue sending CFs within block */
+    int adjusted_st_min;
+    adjusted_st_min = st_min;
+    if (st_min >= 0xF1 && st_min <= 0xF9) {
+      adjusted_st_min = (st_min - 0xF0) / 10; /* Corrected microsecond conversion */
+    }
+    if (adjusted_st_min == 0) {
+      CanTp_SendConsecutiveFrame(); /* Immediate send */
+    } else {
+      setTimer(cf_timer, adjusted_st_min);
+    }
+  }
+}
+
+/* Timer Event for CF Transmission */
+on timer cf_timer {
+  if (sender_state == CANTP_SENDER_SEND_CF && 6 + sequence_number * 7 < tx_length) {
+    write("CF Timer triggered, sequence_number=%d", sequence_number);
+    CanTp_SendConsecutiveFrame();
+  }
+}
+
+/* Send Flow Control */
+CanTp_SendFlowControl(dword canId, int fcType, int bsValue, int stminValue) {
+  message 0x0 tx_msg;
+  tx_msg.id = tx_can_id;
+  tx_msg.dlc = 8;
+  tx_msg.byte(0) = 0x30 | (fcType & 0x0F); /* PCI: FC */
+  tx_msg.byte(1) = bsValue;
+  tx_msg.byte(2) = stminValue;
+  for (i = 3; i < 8; i++) {
+    tx_msg.byte(i) = 0xCC; /* Padding */
+  }
+  output(tx_msg);
+  receiver_state = (fcType == 0) ? CANTP_RECEIVER_RECEIVE_CF : CANTP_RECEIVER_IDLE;
+}
+
+/* Handle Single Frame */
+CanTp_HandleSingleFrame(dword canId, byte payload[]) {
+  int length;
+  if (receiver_state != CANTP_RECEIVER_IDLE) {
+    write("Ignoring SF, invalid state=%d", receiver_state);
+    return;
+  }
+  length = payload[0] & 0x0F;
+  if (length > 7) {
+    last_error = CANTP_E_INVALID_LENGTH;
+    write("Error: Invalid SF length=%d", length);
+    CanTp_ResetToIdle();
+    return;
+  }
+  for (i = 0; i < length; i++) {
+    rx_data[i] = payload[i + 1];
+  }
+  rx_length = length;
+  write("Rx Indication: CAN ID=0x%x, Length=%d", canId, length);
+  CanTp_ResetToIdle();
+}
+
+/* Handle First Frame */
+CanTp_HandleFirstFrame(dword canId, byte payload[]) {
+  if (receiver_state != CANTP_RECEIVER_IDLE) {
+    write("Ignoring FF, invalid state=%d", receiver_state);
+    return;
+  }
+  rx_expected_length = ((payload[0] & 0x0F) << 8) | payload[1];
+  if (rx_expected_length > 4095) {
+    write("Error: FF length overflow=%d", rx_expected_length);
+    CanTp_SendFlowControl(canId, 2, 0, 0); /* Overflow */
+    CanTp_ResetToIdle();
+    return;
+  }
+  receiver_state = CANTP_RECEIVER_PREPARE_BUFFER;
+  for (i = 0; i < 6; i++) {
+    rx_data[i] = payload[i + 2];
+  }
+  rx_length = 6;
+  cf_received = 0;
+  sequence_number = 0;
+  block_size = default_block_size;
+  receiver_state = CANTP_RECEIVER_SEND_FC;
+  CanTp_SendFlowControl(canId, default_Fs, default_block_size, default_st_min);
+}
+
+CanTp_HandleConsecutiveFrame(dword canId, byte payload[]) {
+  int sn, j;
+  if (receiver_state != CANTP_RECEIVER_RECEIVE_CF) {
+    write("Ignoring CF: receiver_state=%d", receiver_state);
+    return;
+  }
+  sn = payload[0] & 0x0F;
+  if (sn != (sequence_number + 1) % 16) {
+    write("Error: Invalid sequence number=%d, expected=%d", sn, (sequence_number + 1) % 16);
+    CanTp_SendFlowControl(canId, 2, 0, 0); /* Gửi FC overflow */
+    CanTp_ResetToIdle();
+    return;
+  }
+  sequence_number = sn;
+  for (j = 0; j < 7 && rx_length < rx_expected_length; j++) {
+    rx_data[rx_length] = payload[j + 1];
+    rx_length++;
+  }
+  cf_received++;
+  write("CF Received: SN=%d, cf_received=%d, block_size=%d, rx_length=%d", 
+        sn, cf_received, block_size, rx_length);
+  if (rx_length >= rx_expected_length) {
+    receiver_state = CANTP_RECEIVER_IDLE;
+    write("Rx Indication: CAN ID=0x%x, Length=%d", canId, rx_length);
+    CanTp_ResetToIdle();
+  } else if (block_size > 0 && cf_received >= block_size) {
+    receiver_state = CANTP_RECEIVER_SEND_FC;
+    CanTp_SendFlowControl(canId, 0, default_block_size, default_st_min); /* Dùng default */
+    write("Sent FC: BS=%d, STmin=%d, cf_received=%d", default_block_size, default_st_min, cf_received);
+    cf_received = 0;
+  } else {
+    write("Waiting for more CFs: cf_received=%d, block_size=%d", cf_received, block_size);
+  }
+}
+
+/* Handle Flow Control */
+CanTp_HandleFlowControl(dword canId, byte payload[]) {
+  int fcType, adjusted_st_min;
+  if (sender_state != CANTP_SENDER_WAIT_FC) {
+    write("Ignoring FC, invalid sender_state=%d", sender_state);
+    return;
+  }
+  fcType = payload[0] & 0x0F;
+  block_size = payload[1];
+  st_min = payload[2];
+  write("FC Decision: FS=%d, BS=%d, STmin=%d, Next State=%d", fcType, block_size, st_min, sender_state);
+  writeToLog("CS Timer Started at %u ms", timeNow());
+  switch (fcType) {
+    case 0: /* ClearToSend */
+      sender_state = CANTP_SENDER_SEND_CF;
+      cf_count = 0;
+      adjusted_st_min = st_min;
+      if (st_min >= 0xF1 && st_min <= 0xF9) {
+        adjusted_st_min = (st_min - 0xF0) * 100; /* Convert microsecond values */
+      }
+      if (adjusted_st_min == 0) {
+        CanTp_SendConsecutiveFrame(); /* Immediate send */
+      } else {
+        setTimer(cf_timer, adjusted_st_min);
+      }
+      break;
+    case 1: /* Wait */
+      /* No action, wait for next FC */
+      break;
+    case 2: /* Overflow */
+      write("Error: FC overflow received");
+      CanTp_ResetToIdle();
+      break;
+  }
+}

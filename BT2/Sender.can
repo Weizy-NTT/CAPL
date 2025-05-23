@@ -1,0 +1,65 @@
+﻿/*@!Encoding:65001*/
+
+variables
+{
+  message msg1AA msgRec;
+}
+
+on message msg1AA
+{
+  msgRec = this;
+}
+
+on signal Signal_1
+{
+  dword newValue = this; // Get the new value of Signal_1
+  
+  if (newValue >= 0 && newValue <= 199)
+  {
+    msgRec.Signal_1 = newValue; // Update signal only if valid
+    write("Signal 1 updated: %u", msgRec.Signal_1);
+  }
+  else
+  {
+    write("Warning: Signal_1 value %u is out of range (0-199). Signal not updated.", newValue);
+  }
+}
+on signal Signal_2
+{
+  write("Signal 2 updated: %d", msgRec.Signal_2);
+}
+
+on signal Signal_3
+{
+  write("Signal 3 updated: %d", msgRec.Signal_3);
+}
+
+on signal Signal_4
+{
+  write("Signal 4 updated: %d", msgRec.Signal_4);
+}
+
+on signal Signal_5
+{
+  write("Signal 5 updated: %d", msgRec.Signal_5);
+}
+
+on signal Signal_6
+{
+  write("Signal 6 updated: %d", msgRec.Signal_6);
+}
+
+on signal Signal_7
+{
+  write("Signal 7 updated: %d", msgRec.Signal_7);
+}
+
+on signal Signal_8
+{
+  write("Signal 8 updated: %d", msgRec.Signal_8);
+}
+
+on signal Signal_9
+{
+  write("Signal 9 updated: %d", msgRec.Signal_9);
+}

@@ -1,0 +1,28 @@
+﻿/*@!Encoding:65001*/
+variables
+{
+  message 0x3B2 msgEngineSpeed;
+}
+
+on key 'a'
+{
+  int i;
+  
+  for (i = 0; i < 8; i++)
+  {
+    msgEngineSpeed.byte(i) = random(256); // Random value for each byte (0–255)
+  }
+  
+  msgEngineSpeed.dlc = 8;
+  output(msgEngineSpeed);
+
+  write("Node1 sent 0x3B2: Bytes = [%02X %02X %02X %02X %02X %02X %02X %02X]",
+        msgEngineSpeed.byte(0),
+        msgEngineSpeed.byte(1),
+        msgEngineSpeed.byte(2),
+        msgEngineSpeed.byte(3),
+        msgEngineSpeed.byte(4),
+        msgEngineSpeed.byte(5),
+        msgEngineSpeed.byte(6),
+        msgEngineSpeed.byte(7));
+}
